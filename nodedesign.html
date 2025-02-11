@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Node-Based Mockup with Resizable Nodes and Textareas + Move Handle</title>
+<style>
+  html {
+    font-size: 16px;
+  }
+  body {
+    background-color: #282828;
+    color: #ebdbb2;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    overflow: hidden;
+    position: relative;
+  }
+  #canvas {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+  }
+  /* SVG layer for connection lines */
+  #svg-lines {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+  }
+  /* Ensure connection lines catch mouse events along the stroke */
+  line {
+    pointer-events: stroke;
+  }
+  .node {
+    position: absolute;
+    background-color: #3c3836;
+    border: 2px solid #504945;
+    border-radius: 8px;
+    padding: 15px;
+    width: 200px;
+    /* Height will be determined by content or via resizing */
+    cursor: default;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    z-index: 2;
+    font-size: 1rem;
+    overflow: hidden;
+  }
+  .node .content {
+    pointer-events: auto;
+  }
+  /* Multi-line textareas with native resize */
+  .node textarea {
+    width: calc(100% - 12px);
+    margin-bottom: 10px;
+    padding: 4px;
+    border: 1px solid #665c54;
+    border-radius: 4px;
+    background-color: #504945;
+    color: #ebdbb2;
+    font-size: 1rem;
+    resize: both;
+    overflow: auto;
+    box-sizing: border-box;
+  }
+  .node button {
+    width: 100%;
+    padding: 6px;
+    background-color: #98971a;
+    border: none;
+    border-radius: 4px;
+    color: #282828;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  .node button:hover {
+    background-color: #b8bb26;
+  }
+  /* Connection ports */
+  .port {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #d3869b;
+    position: absolute;
+    cursor: pointer;
+  }
+  .port-in {
+    left: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .port-out {
+    right: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  /* Delete button on each node (upper right) */
+  .node-delete {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: #fb4934;
+    color: #282828;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 12px;
+    z-index: 3;
+  }
+  /* Move handle for dragging the node (upper left) */
+  .node-move {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    background: #98971a;
+    color: #282828;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 16px;
+    font-size: 12px;
+    cursor: move;
+    z-index: 3;
+  }
+  /* Custom context menu */
+  #context-menu {
+    position: absolute;
+    background-color: #3c3836;
+    border: 1px solid #504945;
+    border-radius: 4px;
+    padding: 5px 0;
+    display: none;
+    z-index: 100;
+    font-size: 1rem;
+  }
+  #context-menu div {
+    padding: 5px 20px;
+    cursor: pointer;
+  }
+  #context-menu div:hover {
+    background-color: #504945;
+  }
+  /* Connection delete button overlay */
+  #connection-delete-btn {
+    position: absolute;
+    background: #fb4934;
+    color: #282828;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    text-align: center;
+    line-height: 20px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 14px;
+    display: none;
+    z-index: 101;
+  }
+  /* Zoom controls in the upper left */
+  #zoom-controls {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 110;
+    display: flex;
+    gap: 5px;
+  }
+  #zoom-controls button {
+    background-color: #504945;
+    color: #ebdbb2;
+    border: 1px solid #665c54;
+    border-radius: 4px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+  #zoom-controls button:hover {
+    background-color: #665c54;
+  }
+  /* Resizer for the node (lower right) */
+  .node-resizer {
+    width: 12px;
+    height: 12px;
+    background: #665c54;
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    cursor: se-resize;
+    z-index: 4;
+  }
+</style>
+</head>
+<body>
+<div id="zoom-controls">
+  <button id="zoom-out">−</button>
+  <button id="zoom-in">+</button>
+</div>
+<div id="canvas">
+  <svg id="svg-lines"></svg>
+  <!-- Nodes will be appended here -->
+</div>
+<div id="context-menu">
+  <div id="new-node-option">New Node</div>
+</div>
+<div id="connection-delete-btn">×</div>
+
+<script>
+  // Set initial base font size on the root
+  let baseFontSize = 16;
+  document.documentElement.style.fontSize = baseFontSize + 'px';
+
+  const canvas = document.getElementById('canvas');
+  const svg = document.getElementById('svg-lines');
+  const contextMenu = document.getElementById('context-menu');
+  const connectionDeleteBtn = document.getElementById('connection-delete-btn');
+  let draggingNode = null, dragOffsetX = 0, dragOffsetY = 0;
+  let connecting = false, startPort = null, tempLine = null;
+  const connections = [];
+  let menuX = 0, menuY = 0;
+  let lastTarget = null;
+  let hoveredConnection = null;
+  let hideConnectionDeleteBtnTimeout = null;
+  
+  function getPortCenter(port) {
+    const rect = port.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+  
+  function createSVGLine(x1, y1, x2, y2) {
+    const svgns = "http://www.w3.org/2000/svg";
+    const line = document.createElementNS(svgns, 'line');
+    line.setAttribute('x1', x1);
+    line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2);
+    line.setAttribute('y2', y2);
+    line.setAttribute('stroke', '#d3869b');
+    line.setAttribute('stroke-width', '2');
+    svg.appendChild(line);
+    
+    // Show the connection delete button overlay when hovering over the line.
+    line.addEventListener('mouseenter', () => {
+      hoveredConnection = connections.find(conn => conn.line === line);
+      const x1 = parseFloat(line.getAttribute('x1'));
+      const y1 = parseFloat(line.getAttribute('y1'));
+      const x2 = parseFloat(line.getAttribute('x2'));
+      const y2 = parseFloat(line.getAttribute('y2'));
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+      connectionDeleteBtn.style.left = (midX - 10) + 'px';
+      connectionDeleteBtn.style.top = (midY - 10) + 'px';
+      connectionDeleteBtn.style.display = 'block';
+    });
+    line.addEventListener('mouseleave', () => {
+      hideConnectionDeleteBtnTimeout = setTimeout(() => {
+        connectionDeleteBtn.style.display = 'none';
+        hoveredConnection = null;
+      }, 200);
+    });
+    return line;
+  }
+  
+  function updateLinePosition(line, fromPort, toPort) {
+    const start = getPortCenter(fromPort);
+    const end = getPortCenter(toPort);
+    line.setAttribute('x1', start.x);
+    line.setAttribute('y1', start.y);
+    line.setAttribute('x2', end.x);
+    line.setAttribute('y2', end.y);
+  }
+  
+  function updateConnections() {
+    connections.forEach(conn => {
+      updateLinePosition(conn.line, conn.from, conn.to);
+    });
+  }
+  
+  // Instead of making the whole node draggable,
+  // we only attach the dragging events to the move handle.
+  function makeNodeMovable(handle, node) {
+    handle.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.button !== 0) return;
+      draggingNode = node;
+      dragOffsetX = e.clientX - node.offsetLeft;
+      dragOffsetY = e.clientY - node.offsetTop;
+      node.style.cursor = 'grabbing';
+    });
+  }
+  
+  document.addEventListener('mousemove', (e) => {
+    if (draggingNode) {
+      draggingNode.style.left = (e.clientX - dragOffsetX) + 'px';
+      draggingNode.style.top = (e.clientY - dragOffsetY) + 'px';
+      updateConnections();
+    }
+    if (connecting && tempLine) {
+      const start = getPortCenter(startPort);
+      tempLine.setAttribute('x1', start.x);
+      tempLine.setAttribute('y1', start.y);
+      tempLine.setAttribute('x2', e.clientX);
+      tempLine.setAttribute('y2', e.clientY);
+    }
+  });
+  
+  document.addEventListener('mouseup', () => {
+    if (draggingNode) {
+      draggingNode.style.cursor = 'default';
+      draggingNode = null;
+    }
+    if (connecting) {
+      if (tempLine && lastTarget && lastTarget.classList.contains('port-in')) {
+        if (lastTarget.parentElement !== startPort.parentElement) {
+          const newLine = createSVGLine(0, 0, 0, 0);
+          connections.push({
+            from: startPort,
+            to: lastTarget,
+            line: newLine
+          });
+          updateLinePosition(newLine, startPort, lastTarget);
+        }
+      }
+      if (tempLine) {
+        svg.removeChild(tempLine);
+        tempLine = null;
+      }
+      connecting = false;
+      startPort = null;
+      lastTarget = null;
+    }
+  });
+  
+  connectionDeleteBtn.addEventListener('mouseenter', () => {
+    if (hideConnectionDeleteBtnTimeout) {
+      clearTimeout(hideConnectionDeleteBtnTimeout);
+    }
+  });
+  connectionDeleteBtn.addEventListener('mouseleave', () => {
+    connectionDeleteBtn.style.display = 'none';
+    hoveredConnection = null;
+  });
+  connectionDeleteBtn.addEventListener('click', () => {
+    if (hoveredConnection) {
+      svg.removeChild(hoveredConnection.line);
+      const index = connections.indexOf(hoveredConnection);
+      if (index > -1) {
+        connections.splice(index, 1);
+      }
+      hoveredConnection = null;
+      connectionDeleteBtn.style.display = 'none';
+    }
+  });
+  
+  function attachPortEvents(port) {
+    if (port.classList.contains('port-out')) {
+      port.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        if (e.button === 0) {
+          connecting = true;
+          startPort = port;
+          tempLine = createSVGLine(0, 0, 0, 0);
+        }
+      });
+    }
+    if (port.classList.contains('port-in')) {
+      port.addEventListener('mouseenter', () => { lastTarget = port; });
+      port.addEventListener('mouseleave', () => { lastTarget = null; });
+      port.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+    }
+  }
+  
+  function attachButtonEvent(button, node) {
+    button.addEventListener('click', () => {
+      const textareas = node.querySelectorAll('textarea');
+      const val1 = textareas[0].value;
+      const val2 = textareas[1].value;
+      alert('Generate clicked!\nInput: ' + val1 + '\nOutput: ' + val2);
+    });
+  }
+  
+  // Make the node resizable via its resizer element.
+  function makeResizable(node) {
+    const resizer = node.querySelector('.node-resizer');
+    resizer.addEventListener('mousedown', function(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      let startX = e.clientX;
+      let startY = e.clientY;
+      let startWidth = parseInt(window.getComputedStyle(node).width, 10);
+      let startHeight = parseInt(window.getComputedStyle(node).height, 10);
+      function doDrag(e) {
+        node.style.width = (startWidth + e.clientX - startX) + 'px';
+        node.style.height = (startHeight + e.clientY - startY) + 'px';
+        updateConnections();
+      }
+      function stopDrag() {
+        window.removeEventListener('mousemove', doDrag);
+        window.removeEventListener('mouseup', stopDrag);
+      }
+      window.addEventListener('mousemove', doDrag);
+      window.addEventListener('mouseup', stopDrag);
+    });
+  }
+  
+  function createNode(x, y) {
+    const node = document.createElement('div');
+    node.classList.add('node');
+    node.style.left = x + 'px';
+    node.style.top = y + 'px';
+  
+    // Create ports
+    const portIn = document.createElement('div');
+    portIn.classList.add('port', 'port-in');
+    const portOut = document.createElement('div');
+    portOut.classList.add('port', 'port-out');
+  
+    // Create content with multi-line textareas (native resize enabled)
+    const content = document.createElement('div');
+    content.classList.add('content');
+    content.innerHTML = `
+      <textarea placeholder="Input" style="min-height:40px;"></textarea>
+      <textarea placeholder="Output" style="min-height:40px;"></textarea>
+      <button>Generate</button>
+    `;
+  
+    // Create node delete button (upper right)
+    const deleteBtn = document.createElement('div');
+    deleteBtn.classList.add('node-delete');
+    deleteBtn.innerText = '×';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Remove any connections related to this node.
+      for (let i = connections.length - 1; i >= 0; i--) {
+        if (connections[i].from.parentElement === node ||
+            connections[i].to.parentElement === node) {
+          svg.removeChild(connections[i].line);
+          connections.splice(i, 1);
+        }
+      }
+      node.parentElement.removeChild(node);
+    });
+  
+    // Create the move handle (upper left)
+    const moveHandle = document.createElement('div');
+    moveHandle.classList.add('node-move');
+    moveHandle.innerHTML = '&#9776;'; // hamburger icon
+    makeNodeMovable(moveHandle, node);
+  
+    // Create the resizer (lower right)
+    const resizer = document.createElement('div');
+    resizer.classList.add('node-resizer');
+  
+    node.appendChild(deleteBtn);
+    node.appendChild(moveHandle);
+    node.appendChild(portIn);
+    node.appendChild(content);
+    node.appendChild(portOut);
+    node.appendChild(resizer);
+    canvas.appendChild(node);
+  
+    makeResizable(node);
+    attachPortEvents(portIn);
+    attachPortEvents(portOut);
+    const button = content.querySelector('button');
+    attachButtonEvent(button, node);
+  }
+  
+  // Custom context menu functions.
+  function showContextMenu(x, y) {
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = x + 'px';
+    contextMenu.style.top = y + 'px';
+    menuX = x;
+    menuY = y;
+  }
+  
+  function hideContextMenu() {
+    contextMenu.style.display = 'none';
+  }
+  
+  canvas.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.node') || e.target.tagName.toLowerCase() === 'line') return;
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY);
+  });
+  
+  document.addEventListener('click', () => { hideContextMenu(); });
+  
+  document.getElementById('new-node-option').addEventListener('click', () => {
+    createNode(menuX, menuY);
+    hideContextMenu();
+  });
+  
+  // Create an initial node.
+  createNode(50, 50);
+  
+  // Zoom controls update the root font size.
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    baseFontSize += 2;
+    document.documentElement.style.fontSize = baseFontSize + 'px';
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    baseFontSize = Math.max(8, baseFontSize - 2);
+    document.documentElement.style.fontSize = baseFontSize + 'px';
+  });
+</script>
+</body>
+</html>
